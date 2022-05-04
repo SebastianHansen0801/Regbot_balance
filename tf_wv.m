@@ -1,0 +1,118 @@
+%% Simscape multibody model og Regbot in balance
+% initial setup with motor velocity controller 
+% this is intended as simulation base for balance control.
+%
+close all
+clear
+
+%% Simulink model name
+model='regbot_1mg';
+
+%% parameters for REGBOT
+% motor
+RA = 3.3/2;    % ohm (2 motors)
+JA = 1.3e-6*2; % motor inertia
+LA = 6.6e-3/2; % rotor inductor (2 motors)
+BA = 3e-6*2;   % rotor friction
+Kemf = 0.0105; % motor constant
+Km = Kemf;
+% køretøj
+NG = 9.69; % gear
+WR = 0.03; % wheel radius
+Bw = 0.155; % wheel distance
+% 
+% model parts used in Simulink
+mmotor = 0.193;   % total mass of motor and gear [kg]
+mframe = 0.32;    % total mass of frame and base print [kg]
+mtopextra = 0.97 - mframe - mmotor; % extra mass on top (charger and battery) [kg]
+mpdist =  0.10;   % distance to lit [m]
+% disturbance position (Z)
+pushDist = 0.1; % relative to motor axle [m]
+
+%% wheel velocity controller (no balance) PI-regulator
+% sample (usable) controller values
+Kpwv = 15;     % Kp
+tiwv = 0.05;   % Tau_i
+Kffwv = 0;     % feed forward constant
+startAngle = 10;  % tilt in degrees at time zero
+twvlp = 0.005;    % velocity noise low pass filter time constant (recommended)
+
+%% Estimate transfer function for base system using LINEARIZE
+% Motor volatge to wheel velocity (wv)
+load_system(model);
+open_system(model);
+% define points in model
+ios(1) = linio(strcat(model,'/vel_ref'),1,'openinput');
+ios(2) = linio(strcat(model, '/robot with balance'),1,'openoutput');
+% attach to model
+setlinio(model,ios);
+% Use the snapshot time(s) 0 seconds
+op = [0];
+% Linearize the model
+sys = linearize(model,ios,op);
+% get transfer function
+[num,den] = ss2tf(sys.A, sys.B, sys.C, sys.D);
+Gwv = minreal(tf(num, den))
+
+%% Bodeplot
+h = figure(100);
+bode(Gwv)
+grid on
+title('Transfer function from ref velocity to tilt angle')
+saveas(h, 'ref vel to velocity.png');
+
+figure(101);
+pzmap(Gwv)
+
+figure(102);
+nyquist(Gwv)
+
+%% fix instability
+s = tf('s');
+wi = 6;
+ti = 1/wi;
+Ci = -(ti*s+1)/(ti*s);
+
+Gbalanced = Gwv*Ci;
+
+figure(104)
+nyquist(Gbalanced)
+
+
+
+%% pi-lead balance controller
+phase_margin = 60;
+Ni = 3;
+alpha = 0.3;
+
+phi_i = rad2deg(-atan(1/Ni));
+phi_m = rad2deg(asin((1-alpha)/(1+alpha)));
+
+phi_G = phase_margin - phi_m - phi_i - 180
+
+figure(200);
+bode(Gwv*Ci*(-1))
+
+omega_c = 53.2;
+
+tau_d = 1/(omega_c*sqrt(alpha));
+C_D = (tau_d*s + 1)/(alpha*tau_d*s + 1);
+
+% Integrator part
+tau_i = Ni/omega_c;
+C_I = (1 + 1/(tau_i*s));
+
+% Open-loop transfer function
+G_ol = minreal(C_I*C_D*Gbalanced);
+
+% P-controller gain
+K_P = 1/abs(freqresp(G_ol,omega_c));
+
+G_cl = (G_ol*K_P)/(1+G_ol*K_P);
+
+G_PILead = C_I*C_D*K_P;
+
+figure(300);
+bode(G_cl)
+figure(301);
+margin(G_cl)
